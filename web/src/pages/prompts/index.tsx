@@ -1,4 +1,4 @@
-import { FolderPlus, Search } from "lucide-react";
+import { FolderPlus, Search, X } from "lucide-react";
 import { type UIEvent, useEffect, useState } from "react";
 import { App, Button, Empty, Input, Spin, Tag } from "antd";
 
@@ -19,6 +19,7 @@ export default function PromptsPage() {
     const addAsset = useAssetStore((state) => state.addAsset);
     const copyText = useCopyText();
     const { query, items: promptItems, tags: promptTags, categories: promptCategoryOptions, total: totalPrompts } = usePromptList({ keyword: titleKeyword, tags: selectedTags, category: selectedCategory });
+    const activeFilterCount = (titleKeyword.trim() ? 1 : 0) + (selectedCategory !== ALL_PROMPTS_OPTION ? 1 : 0) + selectedTags.length;
 
     useEffect(() => {
         if (query.isError) {
@@ -29,6 +30,11 @@ export default function PromptsPage() {
     const toggleTag = (tag: string) => {
         if (tag === ALL_PROMPTS_OPTION) return setSelectedTags([]);
         setSelectedTags((items) => (items.includes(tag) ? items.filter((item) => item !== tag) : [...items, tag]));
+    };
+    const clearFilters = () => {
+        setTitleKeyword("");
+        setSelectedCategory(ALL_PROMPTS_OPTION);
+        setSelectedTags([]);
     };
 
     const savePromptAsset = (item: Prompt) => {
@@ -49,10 +55,18 @@ export default function PromptsPage() {
                 className="min-h-0 flex-1 overflow-y-auto bg-background bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] px-6 py-8 [background-size:16px_16px] dark:bg-[radial-gradient(rgba(245,245,244,.16)_1px,transparent_1px)]"
                 onScroll={handleListScroll}
             >
-                <div className="pb-8">
-                    <div className="mx-auto max-w-5xl text-center">
-                        <h1 className="text-4xl font-semibold tracking-tight text-stone-950 dark:text-stone-100">提示词中心</h1>
-                        <p className="mt-3 text-sm text-stone-500 dark:text-stone-400">共 {totalPrompts} 条提示词，按标题、标签与分类快速查找灵感。</p>
+                <div className="mx-auto max-w-7xl pb-8">
+                    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_420px] lg:items-end">
+                        <div>
+                            <div className="inline-flex items-center rounded-md border border-stone-200 bg-white/80 px-2.5 py-1 text-xs font-medium text-stone-500 shadow-sm dark:border-stone-800 dark:bg-stone-950/80 dark:text-stone-400">
+                                {totalPrompts} 条提示词
+                            </div>
+                            <h1 className="mt-4 text-4xl font-semibold tracking-tight text-stone-950 dark:text-stone-100">提示词仓库</h1>
+                            <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-500 dark:text-stone-400">沉淀可复用的图像提示词、参考风格和创作案例。</p>
+                        </div>
+                        <div className="rounded-lg border border-stone-200 bg-white/90 p-2 shadow-sm backdrop-blur dark:border-stone-800 dark:bg-stone-950/80">
+                            <Input size="large" className="w-full" prefix={<Search className="size-4 text-stone-400" />} value={titleKeyword} placeholder="按标题查询" onChange={(event) => setTitleKeyword(event.target.value)} />
+                        </div>
                     </div>
                     {query.isLoading ? (
                         <div className="flex h-60 items-center justify-center">
@@ -60,14 +74,21 @@ export default function PromptsPage() {
                         </div>
                     ) : null}
                     {!query.isLoading ? (
-                        <>
-                            <div className="mx-auto mt-8 w-full max-w-2xl">
-                                <Input size="large" className="w-full" prefix={<Search className="size-4 text-stone-400" />} value={titleKeyword} placeholder="按标题查询" onChange={(event) => setTitleKeyword(event.target.value)} />
+                        <div className="sticky top-0 z-10 mt-6 rounded-lg border border-stone-200 bg-background/95 p-4 shadow-sm backdrop-blur dark:border-stone-800">
+                            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                                <div className="text-xs font-medium text-stone-500 dark:text-stone-400">
+                                    当前显示 {promptItems.length} / {totalPrompts}
+                                </div>
+                                {activeFilterCount ? (
+                                    <Button size="small" type="text" icon={<X className="size-3.5" />} onClick={clearFilters}>
+                                        清空筛选
+                                    </Button>
+                                ) : null}
                             </div>
-                            <div className="mx-auto mt-6 grid max-w-6xl gap-3 text-left">
+                            <div className="grid gap-3 text-left">
                                 <div className="grid gap-2 sm:grid-cols-[56px_minmax(0,1fr)] sm:items-start">
                                     <div className="pt-2 text-xs font-medium text-stone-500 dark:text-stone-400">分类</div>
-                                    <div className="flex flex-wrap gap-2">
+                                    <div className="hide-scrollbar flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
                                         {promptCategoryOptions.map((category) => (
                                             <Tag.CheckableTag key={category} checked={selectedCategory === category} className={cn("prompt-filter-tag", selectedCategory === category && "is-active")} onChange={() => setSelectedCategory(category)}>
                                                 {category}
@@ -77,7 +98,7 @@ export default function PromptsPage() {
                                 </div>
                                 <div className="grid gap-2 sm:grid-cols-[56px_minmax(0,1fr)] sm:items-start">
                                     <div className="pt-2 text-xs font-medium text-stone-500 dark:text-stone-400">标签</div>
-                                    <div className="flex flex-wrap gap-2">
+                                    <div className="hide-scrollbar flex max-h-28 gap-2 overflow-auto pb-1 sm:flex-wrap sm:pb-0">
                                         {promptTags.map((tag) => (
                                             <Tag.CheckableTag
                                                 key={tag}
@@ -91,7 +112,7 @@ export default function PromptsPage() {
                                     </div>
                                 </div>
                             </div>
-                        </>
+                        </div>
                     ) : null}
                 </div>
 

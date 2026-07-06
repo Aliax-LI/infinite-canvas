@@ -1,7 +1,8 @@
-import { Copy } from "lucide-react";
+import { Copy, Eye } from "lucide-react";
 import type { ReactNode } from "react";
-import { Button, Card, Tag } from "antd";
+import { Button, Tag } from "antd";
 
+import { PromptImage } from "@/components/prompts/prompt-image";
 import { formatPromptDate, type Prompt } from "@/services/api/prompts";
 
 export function PromptCard({
@@ -22,25 +23,26 @@ export function PromptCard({
     extraAction?: ReactNode;
 }) {
     return (
-        <Card
-            hoverable
-            className="overflow-hidden"
-            styles={{ body: { padding: 0 } }}
-            cover={
-                <button type="button" className="block w-full text-left" onClick={onOpen}>
-                    <img src={item.coverUrl} alt={item.title} className="aspect-[4/3] w-full object-cover" />
-                </button>
-            }
-        >
+        <article className="group overflow-hidden rounded-lg border border-stone-200 bg-white shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-stone-300 hover:shadow-md dark:border-stone-800 dark:bg-stone-950 dark:hover:border-stone-700">
+            <div className="relative bg-stone-100 dark:bg-stone-900">
+                <PromptImage src={item.coverUrl} title={item.title} seed={seedFromId(item.id)} />
+                <div className="pointer-events-none absolute right-3 top-3 inline-flex items-center gap-1 rounded-md border border-white/20 bg-black/35 px-2 py-1 text-[11px] font-medium text-white opacity-0 backdrop-blur transition group-hover:opacity-100">
+                    <Eye className="size-3" />
+                    预览
+                </div>
+            </div>
             <button type="button" className="block w-full text-left" onClick={onOpen}>
                 <div className="p-4">
                     <div className="flex items-start justify-between gap-3">
-                        <h2 className="line-clamp-1 text-sm font-semibold text-stone-950 dark:text-stone-100">{item.title}</h2>
+                        <div className="min-w-0">
+                            <h2 className="line-clamp-1 text-sm font-semibold text-stone-950 dark:text-stone-100">{item.title}</h2>
+                            <div className="mt-1 line-clamp-1 text-[11px] text-stone-400 dark:text-stone-500">{item.category}</div>
+                        </div>
                         <span className="shrink-0 text-xs text-stone-400 dark:text-stone-500">{formatPromptDate(item.updatedAt)}</span>
                     </div>
-                    <p className="mt-2 line-clamp-3 text-xs leading-5 text-stone-600 dark:text-stone-400">{item.prompt}</p>
+                    <p className="mt-3 line-clamp-3 text-xs leading-5 text-stone-600 dark:text-stone-400">{item.prompt}</p>
                     <div className="mt-3 flex flex-wrap gap-1.5">
-                        {item.tags.map((tag) => (
+                        {item.tags.slice(0, 5).map((tag) => (
                             <Tag key={tag} className="m-0 text-[11px]">
                                 {tag}
                             </Tag>
@@ -54,6 +56,10 @@ export function PromptCard({
                 </Button>
                 {extraAction}
             </div>
-        </Card>
+        </article>
     );
+}
+
+function seedFromId(value: string) {
+    return Array.from(value).reduce((total, char) => total + char.charCodeAt(0), 0);
 }

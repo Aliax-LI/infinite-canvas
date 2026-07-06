@@ -1,4 +1,4 @@
-import { createBrowserRouter, Outlet } from "react-router-dom";
+import { createHashRouter, Outlet } from "react-router-dom";
 
 import UserLayout from "@/layouts/user-layout";
 import AssetsPage from "@/pages/assets";
@@ -10,7 +10,7 @@ import NotFound from "@/pages/not-found";
 import PromptsPage from "@/pages/prompts";
 import VideoPage from "@/pages/video";
 
-export const router = createBrowserRouter([
+export const router = createHashRouter([
     {
         element: (
             <UserLayout>
