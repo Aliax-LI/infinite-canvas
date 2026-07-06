@@ -4,13 +4,62 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag, leave empty to use web/package.json version"
+        required: false
+        type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  prepare:
+    name: Prepare release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: tag
+        name: Resolve tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag_name="${GITHUB_REF_NAME}"
+          elif [ -n "${{ inputs.tag_name }}" ]; then
+            tag_name="${{ inputs.tag_name }}"
+          else
+            version="$(node -p "require('./web/package.json').version")"
+            tag_name="v${version}"
+          fi
+          echo "tag_name=${tag_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag for manual run
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          tag_name="${{ steps.tag.outputs.tag_name }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          remote_sha="$(git ls-remote --tags origin "refs/tags/${tag_name}" | awk '{print $1}')"
+          head_sha="$(git rev-parse HEAD)"
+          if [ -n "$remote_sha" ] && [ "$remote_sha" != "$head_sha" ]; then
+            echo "Tag ${tag_name} already exists on a different commit: ${remote_sha}"
+            exit 1
+          fi
+          if [ -z "$remote_sha" ]; then
+            git tag "$tag_name"
+            git push origin "refs/tags/${tag_name}"
+          fi
+
   build:
     name: Build ${{ matrix.name }}
+    needs: prepare
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -30,6 +79,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag_name }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -52,3 +103,21 @@ jobs:
             web/release/*.zip
             web/release/*.blockmap
           if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          name: Infinite Canvas ${{ needs.prepare.outputs.tag_name }}
+          files: release-assets/*

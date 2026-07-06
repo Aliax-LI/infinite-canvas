@@ -5,7 +5,7 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
-- 桌面应用构建：安装包文件名改为 `InfiniteCanvas-版本-平台-架构` 短格式，Windows 安装包改为可选择安装目录的 NSIS 向导，新增 GitHub Actions 构建 Windows 与 macOS 桌面产物，需在 tag 或手动触发后验证 artifact 上传。
+- 桌面应用构建：安装包文件名改为 `InfiniteCanvas-版本-平台-架构` 短格式，Windows 安装包改为可选择安装目录的 NSIS 向导，打包脚本会先清理旧 release 产物，GitHub Actions 支持手动创建版本 tag、构建 Windows 与 macOS 桌面产物并上传到 GitHub Release，需验证 release 产物。
 - 提示词仓库：优化顶部搜索筛选区和提示词卡片，封面图加载失败时显示本地图形兜底，卡片、详情和首页图片支持点击预览。
 - 首页体验：首页提示词展示增加本地兜底内容和封面加载失败后的图形封面，GitHub 入口和版本检查地址改为 `Aliax-LI/infinite-canvas`，需验证首页展示、预览和外链跳转。
 - 桌面应用：前端新增 Electron 外壳、应用图标、桌面开发和打包脚本，Vite 静态资源改为相对路径，React Router 改为 hash 路由，需验证桌面窗口图标、页面跳转和安装包生成。
