@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { modelOptionLabel, modelOptionName, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { decodeChannelModel, modelOptionLabel, modelOptionName, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 type ModelPickerProps = {
     config: AiConfig;
@@ -14,17 +14,21 @@ type ModelPickerProps = {
     capability?: ModelCapability;
     className?: string;
     fullWidth?: boolean;
+    /** 底栏等窄位：主文案只显示模型名，渠道以次要样式并列 */
+    compact?: boolean;
     placeholder?: string;
     onMissingConfig?: () => void;
 };
 
-export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder, onMissingConfig }: ModelPickerProps) {
+export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, compact = false, placeholder, onMissingConfig }: ModelPickerProps) {
     const { t } = useTranslation();
     const pickerId = useId();
     const [open, setOpen] = useState(false);
     const options = useMemo(() => Array.from(new Set([...(config.channelMode === "local" && !capability ? [value] : []), ...selectableModelsByCapability(config, capability)].filter((model): model is string => Boolean(model)))), [capability, config, value]);
     const current = value || "";
     const pickerPlaceholder = placeholder || t("settingsPanels.model.select");
+    const channelName = current ? modelOptionChannelName(config, current) : null;
+    const modelName = current ? modelOptionName(current) : "";
 
     useEffect(() => {
         const closeOtherPicker = (event: Event) => {
@@ -48,8 +52,10 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
             <SelectTrigger
                 className={cn(
                     "canvas-composer-model-picker h-8 w-fit max-w-full gap-2 rounded-full border border-input bg-transparent px-3 text-sm font-normal shadow-sm transition-colors",
-                    fullWidth ? "w-full min-w-0 justify-start" : "min-w-[9rem] justify-start",
-                    "data-[state=open]:border-ring data-[state=open]:ring-2 data-[state=open]:ring-ring/20",
+                    fullWidth ? "w-full min-w-0 justify-start" : compact ? "min-w-0 max-w-full justify-start px-2.5" : "min-w-[9rem] justify-start",
+                    compact
+                        ? "border-stone-200/90 shadow-none hover:bg-black/[0.04] focus-visible:ring-0 dark:border-stone-700 dark:hover:bg-white/[0.06] data-[state=open]:ring-1 data-[state=open]:ring-stone-300/70 dark:data-[state=open]:ring-stone-600"
+                        : "data-[state=open]:border-ring data-[state=open]:ring-2 data-[state=open]:ring-ring/20",
                     className,
                 )}
                 onMouseDown={(event) => event.stopPropagation()}
@@ -57,7 +63,25 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 title={current ? modelOptionLabel(config, current) : pickerPlaceholder}
             >
                 <ModelIcon model={current} />
-                <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{current ? modelOptionLabel(config, current) : pickerPlaceholder}</span>
+                {current ? (
+                    compact ? (
+                        <span className="canvas-model-picker-text flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-left">
+                            <span className="truncate">{modelName}</span>
+                            {channelName ? (
+                                <>
+                                    <span className="shrink-0 text-stone-400 dark:text-stone-500" aria-hidden>
+                                        ·
+                                    </span>
+                                    <span className="max-w-[5.5rem] truncate text-xs text-stone-500 dark:text-stone-400 sm:max-w-[7rem]">{channelName}</span>
+                                </>
+                            ) : null}
+                        </span>
+                    ) : (
+                        <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{modelOptionLabel(config, current)}</span>
+                    )
+                ) : (
+                    <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left text-muted-foreground">{pickerPlaceholder}</span>
+                )}
             </SelectTrigger>
             <SelectContent
                 data-canvas-no-zoom
@@ -98,6 +122,12 @@ function ModelLabel({ config, model }: { config: AiConfig; model: string }) {
             <span className="truncate">{modelOptionLabel(config, model)}</span>
         </span>
     );
+}
+
+function modelOptionChannelName(config: AiConfig, value: string) {
+    const decoded = decodeChannelModel(value);
+    if (!decoded) return null;
+    return config.channels.find((item) => item.id === decoded.channelId)?.name ?? null;
 }
 
 function ModelIcon({ model }: { model: string }) {

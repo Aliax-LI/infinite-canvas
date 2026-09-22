@@ -1,4 +1,5 @@
 import i18n from "@/i18n";
+import { isLocalAgentAutoConnectBlocked } from "@/lib/agent/local-agent-connect-policy";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import type { AgentReasoningEffort } from "@/stores/use-agent-store";
 
@@ -116,6 +117,7 @@ export function setCodexSkillEnabled(endpoint: string, token: string, skill: Pic
 }
 
 export async function fetchAgentJson<T>(endpoint: string, token: string, path: string, init?: RequestInit) {
+    if (isLocalAgentAutoConnectBlocked(endpoint)) throw new AgentApiError(0, { error: "local agent unavailable in embed" });
     const url = `${endpoint}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
     const res = await fetch(url, init);
     const data = (await res.json().catch(() => ({}))) as T & { error?: string; msg?: string };
@@ -124,6 +126,7 @@ export async function fetchAgentJson<T>(endpoint: string, token: string, path: s
 }
 
 export async function discoverAgentConfig(endpoint: string) {
+    if (isLocalAgentAutoConnectBlocked(endpoint)) return null;
     try {
         const res = await fetch(`${endpoint}/config`);
         if (!res.ok) return null;

@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { readAgentUrlBootstrap } from "@/lib/agent/agent-url-bootstrap";
+import { canAutoConnectLocalAgent, isLocalAgentAutoConnectBlocked } from "@/lib/agent/local-agent-connect-policy";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { imageMetadata } from "@/lib/canvas/canvas-node-factory";
@@ -341,6 +342,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
 
     useEffect(() => {
         if (!clientReady || !enabled || !token.trim()) return;
+        if (isLocalAgentAutoConnectBlocked(endpoint)) {
+            setAgentState({ enabled: false, connected: false, silentConnect: false, fragmentBootstrap: false, activity: rt("offline"), connectError: "" });
+            return;
+        }
         localStorage.setItem("canvas-agent-url", endpoint);
         localStorage.setItem("canvas-agent-token", token);
         const clientId = clientIdRef.current;
@@ -941,6 +946,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             }
             return;
         }
+        if (silent && !canAutoConnectLocalAgent(nextEndpoint)) return;
         errorLoggedRef.current = false;
         setAgentState({ url: nextEndpoint, token: nextToken, enabled: true, connected: false, silentConnect: silent, fragmentBootstrap: false, activity: rt("connecting"), connectError: "", activeTab: "setup" });
     };
@@ -962,8 +968,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             useAgentStore.getState().openPanel();
             return;
         }
+        const bootstrapUrl = bootstrap.url.replace(/\/$/, "");
+        if (!canAutoConnectLocalAgent(bootstrapUrl)) return;
         errorLoggedRef.current = false;
-        setAgentState({ url: bootstrap.url.replace(/\/$/, ""), token: bootstrap.token, enabled: true, connected: false, silentConnect: true, fragmentBootstrap: true, confirmTools: false, activity: rt("connecting"), connectError: "", activeTab: "setup" });
+        setAgentState({ url: bootstrapUrl, token: bootstrap.token, enabled: true, connected: false, silentConnect: true, fragmentBootstrap: true, confirmTools: false, activity: rt("connecting"), connectError: "", activeTab: "setup" });
     }, [hash, navigate, setAgentState]);
 
     useEffect(() => {
@@ -972,9 +980,11 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
 
     useEffect(() => {
         if ((!autoConnect && !urlAgentAutoConnect) || autoConnectRef.current || enabled || connected) return;
+        const candidate = (searchParams.get("agentUrl") || endpoint || DEFAULT_AGENT_URL).trim();
+        if (!canAutoConnectLocalAgent(candidate)) return;
         autoConnectRef.current = true;
         void toggleAgentConnection({ silent: true });
-    }, [autoConnect, connected, enabled, urlAgentAutoConnect]);
+    }, [autoConnect, connected, enabled, endpoint, urlAgentAutoConnect, searchParams]);
 
     function clearAgentSession(patch: Parameters<typeof setAgentState>[0] = {}) {
         loadThreadsSequenceRef.current += 1;

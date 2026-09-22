@@ -70,6 +70,13 @@ export type ChannelCredentialsImportResult = {
     channelName?: string;
 };
 
+export type EmbedDefaultModels = {
+    image?: string;
+    text?: string;
+    video?: string;
+    audio?: string;
+};
+
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://api.openai.com";
@@ -139,6 +146,7 @@ type ConfigStore = {
     shouldPromptContinue: boolean;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
     importChannelCredentials: (input: { baseUrl?: string | null; apiKey?: string | null }) => ChannelCredentialsImportResult;
+    enrichImportedChannelFromEmbed: (baseUrl: string, modelNames: string[], defaults?: EmbedDefaultModels) => void;
     updateWebdavConfig: <K extends keyof WebdavSyncConfig>(key: K, value: WebdavSyncConfig[K]) => void;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
     openConfigDialog: (shouldPromptContinue?: boolean, tab?: ConfigTabKey) => void;
@@ -223,6 +231,11 @@ export const useConfigStore = create<ConfigStore>()(
                 const result = upsertChannelCredentials(currentConfig, input);
                 if (result.config !== currentConfig) set({ config: result.config });
                 return { status: result.status, channelName: result.channelName };
+            },
+            enrichImportedChannelFromEmbed: (baseUrl, modelNames, defaults) => {
+                const currentConfig = get().config;
+                const nextConfig = enrichImportedChannelModels(currentConfig, baseUrl, modelNames, defaults);
+                if (nextConfig !== currentConfig) set({ config: nextConfig });
             },
             updateWebdavConfig: (key, value) =>
                 set((state) => ({
@@ -312,6 +325,84 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
     };
 }
 
+export function enrichImportedChannelModels(config: AiConfig, baseUrl: string, modelNames: string[], defaults?: EmbedDefaultModels): AiConfig {
+    const channel = findChannelByImportedBaseUrl(config, baseUrl);
+    if (!channel) return config;
+
+    const byName = new Map(channel.models.map((model) => [model.name, model]));
+    for (const name of modelNames) {
+        const trimmed = name.trim();
+        if (!trimmed || byName.has(trimmed)) continue;
+        byName.set(trimmed, { name: trimmed, capability: guessCapability(trimmed) });
+    }
+    (["image", "text", "video", "audio"] as const).forEach((capability) => {
+        const preferred = defaults?.[capability]?.trim();
+        if (!preferred) return;
+        byName.set(preferred, { name: preferred, capability });
+    });
+
+    const models = Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+    if (!models.length && !defaults) return config;
+
+    const channels = config.channels.map((item) => (item.id === channel.id ? { ...item, models } : item));
+    const encoded = (name: string) => encodeChannelModel(channel.id, name);
+    const pick = (capability: ModelCapability, preferred?: string) => {
+        const name = preferred?.trim();
+        if (name && models.some((model) => model.name === name)) return encoded(name);
+        const matched = models.find((model) => model.capability === capability);
+        return matched ? encoded(matched.name) : "";
+    };
+
+    const imageModel = pick("image", defaults?.image);
+    const textModel = pick("text", defaults?.text);
+    const videoModel = pick("video", defaults?.video);
+    const audioModel = pick("audio", defaults?.audio);
+
+    return {
+        ...config,
+        channels,
+        models: modelOptionsFromChannels(channels),
+        ...(imageModel ? { imageModel, model: imageModel } : {}),
+        ...(textModel ? { textModel } : {}),
+        ...(videoModel ? { videoModel } : {}),
+        ...(audioModel ? { audioModel } : {}),
+    };
+}
+
+export function findChannelByImportedBaseUrl(config: AiConfig, baseUrl: string): ModelChannel | undefined {
+    const raw = baseUrl?.trim() || "";
+    if (!raw || !isHttpBaseUrl(raw)) return undefined;
+    const key = normalizedBaseUrlKey(normalizeImportedBaseUrl(raw));
+    return config.channels.find((channel) => normalizedBaseUrlKey(channel.baseUrl) === key);
+}
+
+/** 出厂占位：OpenAI 默认地址且无 API Key，嵌入/URL 导入成功后移除。 */
+export function isStockDefaultChannel(channel: ModelChannel) {
+    if (channel.id !== "default") return false;
+    if (channel.apiKey.trim()) return false;
+    return normalizedBaseUrlKey(channel.baseUrl) === normalizedBaseUrlKey(OPENAI_BASE_URL);
+}
+
+export function dropStockDefaultChannel(config: AiConfig): AiConfig {
+    if (config.channels.length <= 1) return config;
+    const hasConfiguredImport = config.channels.some((channel) => !isStockDefaultChannel(channel) && channel.apiKey.trim());
+    if (!hasConfiguredImport) return config;
+    const channels = config.channels.filter((channel) => !isStockDefaultChannel(channel));
+    if (channels.length === config.channels.length || !channels.length) return config;
+    const models = modelOptionsFromChannels(channels);
+    const remap = (value: string) => normalizeModelOptionValue(value, channels) || models[0] || "";
+    return {
+        ...config,
+        channels,
+        models,
+        model: remap(config.model),
+        imageModel: remap(config.imageModel),
+        videoModel: remap(config.videoModel),
+        textModel: remap(config.textModel),
+        audioModel: remap(config.audioModel),
+    };
+}
+
 export function upsertChannelCredentials(
     config: AiConfig,
     input: { baseUrl?: string | null; apiKey?: string | null },
@@ -327,11 +418,15 @@ export function upsertChannelCredentials(
     if (matchingIndex >= 0) {
         const existing = config.channels[matchingIndex];
         if (existing.baseUrl === baseUrl && (!apiKey || existing.apiKey === apiKey)) {
-            return { status: "updated", channelName: existing.name, config };
+            const effectiveKey = apiKey || existing.apiKey;
+            const nextConfig = effectiveKey.trim() ? dropStockDefaultChannel(config) : config;
+            return { status: "updated", channelName: existing.name, config: nextConfig };
         }
         const updated = { ...existing, baseUrl, ...(apiKey ? { apiKey } : {}) };
         const channels = config.channels.map((channel, index) => (index === matchingIndex ? updated : channel));
-        return { status: "updated", channelName: existing.name, config: { ...config, channels } };
+        const merged = { ...config, channels };
+        const nextConfig = (apiKey || updated.apiKey).trim() ? dropStockDefaultChannel(merged) : merged;
+        return { status: "updated", channelName: existing.name, config: nextConfig };
     }
 
     const channel = createModelChannel({
@@ -341,7 +436,9 @@ export function upsertChannelCredentials(
         apiFormat: "openai",
         models: [],
     });
-    return { status: "created", channelName: channel.name, config: { ...config, channels: [...config.channels, channel] } };
+    const merged = { ...config, channels: [...config.channels, channel] };
+    const nextConfig = apiKey.trim() ? dropStockDefaultChannel(merged) : merged;
+    return { status: "created", channelName: channel.name, config: nextConfig };
 }
 
 function isHttpBaseUrl(baseUrl: string) {

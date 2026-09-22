@@ -1,20 +1,20 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Tag, Tooltip, Typography } from "antd";
+import { ArrowLeft, ArrowRight, ArrowUp, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Trash2, Upload, X } from "lucide-react";
+import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from "react";
+import { createPortal } from "react-dom";
+import { App, Button, Checkbox, Dropdown, Image, Input, Modal, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
 import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
-import { ImageSettingsPanel } from "@/components/image-settings-panel";
+import { CanvasImageSettingsPopover } from "@/components/canvas/canvas-image-settings-popover";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
-import { canvasThemes } from "@/lib/canvas-theme";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
-import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
-import { formatBytes, formatDuration } from "@/lib/image-utils";
+import { formatDuration } from "@/lib/image-utils";
+import { inferMediaRatio } from "@/lib/media-size";
 import { requestEdit, requestGeneration } from "@/services/api/image";
 import { deleteStoredImages, ensureImagePreview, getImagePreviewRevision, previewUrlFor, resolveImageUrl, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -64,7 +64,6 @@ type GenerationLogConfig = Pick<AiConfig, "model" | "imageModel" | "quality" | "
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
 
 const LOG_STORE_KEY = "infinite-canvas:image_generation_logs";
-const RESULT_ACTION_BUTTON_CLASS = "min-w-0 px-1.5 [&_.ant-btn-icon]:shrink-0 [&>span:last-child]:min-w-0 [&>span:last-child]:truncate";
 const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
 
 export default function ImagePage() {
@@ -72,6 +71,7 @@ export default function ImagePage() {
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const threadRef = useRef<HTMLDivElement>(null);
     const dragDepthRef = useRef(0);
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
@@ -85,13 +85,13 @@ export default function ImagePage() {
     const [logs, setLogs] = useState<GenerationLog[]>([]);
     const [running, setRunning] = useState(false);
     const [logsOpen, setLogsOpen] = useState(false);
-    const [settingsOpen, setSettingsOpen] = useState(false);
     const [promptDialogOpen, setPromptDialogOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [startedAt, setStartedAt] = useState(0);
     const [elapsedMs, setElapsedMs] = useState(0);
     const [selectedLogIds, setSelectedLogIds] = useState<string[]>([]);
     const [previewLog, setPreviewLog] = useState<GenerationLog | null>(null);
+    const [liveTurn, setLiveTurn] = useState<{ prompt: string; references: ReferenceImage[] } | null>(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [isReferenceDragActive, setIsReferenceDragActive] = useState(false);
     const [autoRunToken, setAutoRunToken] = useState(0);
@@ -114,6 +114,12 @@ export default function ImagePage() {
     useEffect(() => {
         void refreshLogs();
     }, []);
+
+    useEffect(() => {
+        const node = threadRef.current;
+        if (!node) return;
+        node.scrollTo({ top: node.scrollHeight, behavior: running ? "smooth" : "auto" });
+    }, [logs.length, liveTurn, results, running]);
 
     const addReferences = async (files?: FileList | null) => {
         const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
@@ -173,6 +179,7 @@ export default function ImagePage() {
         setRunning(true);
         if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
         setPreviewLog(null);
+        setLiveTurn({ prompt: snapshot.text, references: snapshot.references });
         setResults(Array.from({ length: generationCount }, () => ({ id: nanoid(), status: "pending" })));
         const batchStartedAt = performance.now();
         setStartedAt(batchStartedAt);
@@ -188,7 +195,7 @@ export default function ImagePage() {
         if (agentTaskId) updateAgentTask(agentTaskId, { status: successCount ? "succeeded" : "failed", successCount, failCount, error: successCount ? undefined : error });
 
         try {
-            saveLog(
+            await saveLog(
                 buildLog({
                     prompt: text,
                     model,
@@ -202,6 +209,8 @@ export default function ImagePage() {
                 }),
             );
             successCount ? message.success(t("imageWorkbench.generated")) : message.error(failed?.reason instanceof Error ? failed.reason.message : t("workbench.generationFailed"));
+            setLiveTurn(null);
+            setResults([]);
         } finally {
             setRunning(false);
         }
@@ -273,6 +282,7 @@ export default function ImagePage() {
         setStartedAt(0);
         setSelectedLogIds([]);
         setPreviewLog(null);
+        setLiveTurn(null);
     };
 
     const deleteSelectedLogs = () => {
@@ -280,28 +290,28 @@ export default function ImagePage() {
         void Promise.all([deleteStoredImages(imageKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(refreshLogs);
         if (previewLog && selectedLogIds.includes(previewLog.id)) {
             setPreviewLog(null);
-            setResults([]);
         }
         setSelectedLogIds([]);
         setDeleteConfirmOpen(false);
     };
 
-    const saveLog = (log: GenerationLog) => {
-        void logStore.setItem(log.id, serializeLog(log)).then(refreshLogs);
-    };
+    const saveLog = (log: GenerationLog) => logStore.setItem(log.id, serializeLog(log)).then(refreshLogs);
 
     const refreshLogs = async () => setLogs(await readStoredLogs());
 
-    const previewGenerationLog = async (log: GenerationLog) => {
-        setPreviewLog(log);
-        setLogsOpen(false);
+    const applyLogToComposer = (log: GenerationLog) => {
         setPrompt(log.prompt);
         setReferences(log.references || []);
         if (log.config.imageModel || log.model) updateConfig("imageModel", log.config.imageModel || log.model);
         if (log.config.quality) updateConfig("quality", log.config.quality);
         if (log.config.size) updateConfig("size", log.config.size);
         if (log.config.count) updateConfig("count", log.config.count);
-        setResults(log.images.map((image) => ({ id: image.id, status: "success", image })));
+    };
+
+    const previewGenerationLog = async (log: GenerationLog) => {
+        setPreviewLog(log);
+        setLogsOpen(false);
+        applyLogToComposer(log);
     };
 
     const buildRequestSnapshot = () => {
@@ -361,163 +371,177 @@ export default function ImagePage() {
         }
     };
 
+    const historyTurns = [...logs].reverse();
+    const beginDrag = (event: DragEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        dragDepthRef.current += 1;
+        if (event.dataTransfer.types.includes("Files")) setIsReferenceDragActive(true);
+    };
+    const endDrag = (event: DragEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (!dragDepthRef.current) setIsReferenceDragActive(false);
+    };
+    const dropFiles = (event: DragEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        dragDepthRef.current = 0;
+        setIsReferenceDragActive(false);
+        void addReferences(event.dataTransfer.files);
+    };
+
     return (
-        <div className="flex h-full flex-col overflow-hidden bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
-            <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-[300px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)]">
-                <aside className="thin-scrollbar hidden min-h-0 overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:block">
-                    <LogPanel
-                        logs={logs}
-                        selectedLogIds={selectedLogIds}
-                        activeLogId={previewLog?.id}
-                        onSelectedLogIdsChange={setSelectedLogIds}
-                        onCreateSession={createSession}
-                        onDeleteSelected={() => setDeleteConfirmOpen(true)}
-                        onPreviewLog={(log) => void previewGenerationLog(log)}
+        <div
+            className="flex h-full flex-col overflow-hidden bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100"
+            onDragEnter={beginDrag}
+            onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "copy";
+            }}
+            onDragLeave={endDrag}
+            onDrop={dropFiles}
+        >
+            <h1 className="sr-only">{t("imageWorkbench.title")}</h1>
+            <div ref={threadRef} className="thin-scrollbar min-h-0 flex-1 overflow-y-auto">
+                {historyTurns.length || liveTurn ? (
+                    <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-5 px-4 py-5">
+                        {historyTurns.map((log) => (
+                            <ThreadTurn
+                                key={log.id}
+                                prompt={log.prompt}
+                                references={log.references}
+                                tags={[modelOptionLabel(effectiveConfig, log.config.imageModel || log.model), inferMediaRatio(log.config.size || log.size || "auto"), formatDuration(log.durationMs)].filter(Boolean)}
+                                failCount={log.failCount}
+                                images={log.images}
+                                onPromptClick={() => applyLogToComposer(log)}
+                                onEdit={addResultToReferences}
+                                onDownload={downloadImage}
+                                onSaveAsset={saveResultToAssets}
+                                onRetry={
+                                    log.failCount
+                                        ? () => {
+                                              applyLogToComposer(log);
+                                              setAutoRunToken((value) => value + 1);
+                                          }
+                                        : undefined
+                                }
+                            />
+                        ))}
+                        {liveTurn ? (
+                            <ThreadTurn
+                                prompt={liveTurn.prompt}
+                                references={liveTurn.references}
+                                tags={[modelOptionLabel(effectiveConfig, model), running ? t("workbench.waiting", { time: formatDuration(elapsedMs) }) : ""].filter(Boolean)}
+                                results={results}
+                                onEdit={addResultToReferences}
+                                onDownload={downloadImage}
+                                onSaveAsset={saveResultToAssets}
+                                onRetry={retryResult}
+                            />
+                        ) : null}
+                    </div>
+                ) : (
+                    <div className="flex min-h-full flex-col items-center justify-center px-6 text-center">
+                        <ImagePlus className="mb-4 size-10 text-stone-500" />
+                        <p className="text-base font-medium">{t("imageWorkbench.empty")}</p>
+                        <p className="mt-1 max-w-sm text-sm text-stone-500 dark:text-stone-400">{t("imageWorkbench.emptyHint")}</p>
+                    </div>
+                )}
+            </div>
+
+            <div className="shrink-0 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-1">
+                <div className={`mx-auto w-full max-w-3xl rounded-2xl border bg-card p-3 shadow-sm transition-colors ${isReferenceDragActive ? "border-stone-900 dark:border-stone-100" : "border-stone-200 dark:border-stone-800"}`}>
+                    {isReferenceDragActive ? <p className="mb-2 text-center text-sm text-stone-500 dark:text-stone-400">{t("imageWorkbench.dropReferences")}</p> : null}
+                    {references.length ? (
+                        <div
+                            className="hover-scrollbar mb-2 flex gap-2 overflow-x-auto overscroll-x-contain pb-1"
+                            onWheel={(event) => {
+                                if (event.currentTarget.scrollWidth <= event.currentTarget.clientWidth) return;
+                                event.preventDefault();
+                                event.currentTarget.scrollLeft += event.deltaY;
+                            }}
+                        >
+                            <Image.PreviewGroup items={references.map((item) => item.dataUrl || previewUrlFor(item.storageKey)).filter(Boolean)} preview={{ zIndex: 1300 }}>
+                            {references.map((item, index) => (
+                                <div key={item.id} className="group relative size-16 shrink-0 overflow-hidden rounded-lg border border-stone-200 dark:border-stone-800">
+                                    <Image src={previewUrlFor(item.storageKey) || item.dataUrl} preview={{ src: item.dataUrl || previewUrlFor(item.storageKey) }} alt={item.name} classNames={{ root: "block size-full", img: "!h-full !w-full object-cover" }} />
+                                    <span className="pointer-events-none absolute left-1 top-1 rounded bg-black/60 px-1 py-px text-[10px] font-medium text-white">{imageReferenceLabel(index)}</span>
+                                    <ReferenceOrderButtons index={index} total={references.length} onMove={(offset) => setReferences((value) => moveListItem(value, index, offset))} />
+                                    <button
+                                        type="button"
+                                        className="absolute right-0.5 top-0.5 hidden size-5 items-center justify-center rounded bg-black/60 text-white group-hover:flex"
+                                        onClick={() => setReferences((value) => value.filter((ref) => ref.id !== item.id))}
+                                        aria-label={t("imageWorkbench.removeReference")}
+                                    >
+                                        <Trash2 className="size-3" />
+                                    </button>
+                                </div>
+                            ))}
+                            </Image.PreviewGroup>
+                        </div>
+                    ) : null}
+                    <Input.TextArea
+                        value={prompt}
+                        onChange={(event) => setPrompt(event.target.value)}
+                        autoSize={{ minRows: 2, maxRows: 8 }}
+                        variant="borderless"
+                        placeholder={t("imageWorkbench.promptPlaceholder")}
+                        className="!min-h-[3.25rem] text-base leading-6"
+                        onKeyDown={(event) => {
+                            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                            event.preventDefault();
+                            if (canGenerate && !running) void generate();
+                        }}
                     />
-                </aside>
-
-                <section className="grid gap-3 lg:min-h-0 lg:overflow-hidden xl:grid-cols-[420px_minmax(0,1fr)]">
-                    <div className="thin-scrollbar flex flex-col rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:min-h-0 lg:overflow-y-auto">
-                        <div>
-                            <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                    <h1 className="text-2xl font-semibold text-stone-950 dark:text-stone-100">{t("imageWorkbench.title")}</h1>
-                                </div>
-                                <div className="flex shrink-0 gap-2 lg:hidden">
-                                    <Button icon={<History className="size-4" />} onClick={() => setLogsOpen(true)}>
-                                        {t("workbench.logs")}
-                                    </Button>
-                                    <Button icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
-                                        {t("workbench.settings")}
-                                    </Button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="mt-6 space-y-5">
-                            <div>
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                    <span className="text-base font-semibold">{t("workbench.prompt")}</span>
-                                    <div className="flex gap-2">
-                                        <Button size="small" icon={<BookOpen className="size-3.5" />} onClick={() => setPromptDialogOpen(true)}>
-                                            {t("workbench.viewPrompts")}
-                                        </Button>
-                                        <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => setAssetPickerOpen(true)}>
-                                            {t("workbench.viewAssets")}
-                                        </Button>
-                                    </div>
-                                </div>
-                                <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={7} placeholder={t("imageWorkbench.promptPlaceholder")} />
-                            </div>
-
-                            <div className="min-w-0">
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                    <span className="text-base font-semibold">{t("imageWorkbench.references")}</span>
-                                    <div className="flex gap-2">
-                                        <Button size="small" icon={<ClipboardPaste className="size-3.5" />} onClick={() => void addReferencesFromClipboard()}>
-                                            {t("workbench.clipboard")}
-                                        </Button>
-                                        <Button size="small" icon={<Upload className="size-3.5" />} onClick={() => fileInputRef.current?.click()}>
-                                            {t("workbench.upload")}
-                                        </Button>
-                                    </div>
-                                </div>
-                                <div
-                                    className={`hover-scrollbar hover-scrollbar-hint relative flex min-h-24 w-full min-w-0 max-w-full gap-2 overflow-x-scroll overflow-y-hidden rounded-lg border border-dashed p-2 pb-3 overscroll-x-contain transition-colors ${isReferenceDragActive ? "border-stone-900 bg-stone-100/80 dark:border-stone-100 dark:bg-stone-900/80" : "border-stone-300 dark:border-stone-700"}`}
-                                    onDragEnter={(event) => {
-                                        event.preventDefault();
-                                        dragDepthRef.current += 1;
-                                        if (event.dataTransfer.types.includes("Files")) setIsReferenceDragActive(true);
-                                    }}
-                                    onDragOver={(event) => {
-                                        event.preventDefault();
-                                        event.dataTransfer.dropEffect = "copy";
-                                    }}
-                                    onDragLeave={(event) => {
-                                        event.preventDefault();
-                                        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-                                        if (!dragDepthRef.current) setIsReferenceDragActive(false);
-                                    }}
-                                    onDrop={(event) => {
-                                        event.preventDefault();
-                                        dragDepthRef.current = 0;
-                                        setIsReferenceDragActive(false);
-                                        void addReferences(event.dataTransfer.files);
-                                    }}
-                                    onWheel={(event) => {
-                                        if (event.currentTarget.scrollWidth <= event.currentTarget.clientWidth) return;
-                                        event.preventDefault();
-                                        event.currentTarget.scrollLeft += event.deltaY;
-                                    }}
-                                >
-                                    {references.map((item, index) => (
-                                        <div key={item.id} className="group relative size-20 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
-                                            <img src={previewUrlFor(item.storageKey) || item.dataUrl} alt={item.name} className="size-full object-cover" />
-                                            <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">{imageReferenceLabel(index)}</span>
-                                            <ReferenceOrderButtons index={index} total={references.length} onMove={(offset) => setReferences((value) => moveListItem(value, index, offset))} />
-                                            <button
-                                                type="button"
-                                                className="absolute right-1 top-1 hidden size-6 items-center justify-center rounded bg-black/60 text-white group-hover:flex"
-                                                onClick={() => setReferences((value) => value.filter((ref) => ref.id !== item.id))}
-                                                aria-label={t("imageWorkbench.removeReference")}
-                                            >
-                                                <Trash2 className="size-3.5" />
-                                            </button>
-                                        </div>
-                                    ))}
-                                    {!references.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{isReferenceDragActive ? t("imageWorkbench.dropReferences") : t("imageWorkbench.noReferences")}</div> : null}
-                                </div>
-                            </div>
-
-                            <div className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm dark:border-stone-800 dark:bg-stone-900 sm:hidden">
-                                <span className="truncate text-stone-500 dark:text-stone-400">
-                                    {modelOptionLabel(effectiveConfig, model)} · {effectiveConfig.size} · {effectiveConfig.quality}
-                                </span>
-                                <Button size="small" type="text" icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
-                                    {t("workbench.adjust")}
-                                </Button>
-                            </div>
-
-                            <div className="hidden gap-4 sm:grid sm:grid-cols-2">
-                                <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
-                            </div>
-                        </div>
-
-                        <div className="mt-auto pt-6">
-                            <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
-                                {t("workbench.generate")}
-                            </Button>
+                    <div className="mt-2 flex items-center gap-1">
+                        <Dropdown
+                            trigger={["click"]}
+                            menu={{
+                                items: [
+                                    { key: "upload", icon: <Upload className="size-3.5" />, label: t("workbench.upload"), onClick: () => fileInputRef.current?.click() },
+                                    { key: "clipboard", icon: <ClipboardPaste className="size-3.5" />, label: t("workbench.clipboard"), onClick: () => void addReferencesFromClipboard() },
+                                    { key: "assets", icon: <FolderPlus className="size-3.5" />, label: t("workbench.viewAssets"), onClick: () => setAssetPickerOpen(true) },
+                                ],
+                            }}
+                        >
+                            <Tooltip title={t("imageWorkbench.references")}>
+                                <Button type="text" size="small" icon={<Plus className="size-4" />} aria-label={t("imageWorkbench.references")} />
+                            </Tooltip>
+                        </Dropdown>
+                        <Tooltip title={t("workbench.viewPrompts")}>
+                            <Button type="text" size="small" icon={<BookOpen className="size-4" />} onClick={() => setPromptDialogOpen(true)} aria-label={t("workbench.viewPrompts")} />
+                        </Tooltip>
+                        <Tooltip title={t("workbench.logs")}>
+                            <Button type="text" size="small" icon={<History className="size-4" />} onClick={() => setLogsOpen(true)} aria-label={t("workbench.logs")} />
+                        </Tooltip>
+                        <div className="ml-auto flex min-w-0 items-center gap-1">
+                            <ModelPicker
+                                config={effectiveConfig}
+                                value={model}
+                                onChange={(value) => updateConfig("imageModel", value)}
+                                capability="image"
+                                compact
+                                className="!h-8 !min-w-0 !max-w-[min(100%,12.5rem)] sm:!max-w-[15rem]"
+                                onMissingConfig={() => openConfigDialog(false)}
+                            />
+                            <CanvasImageSettingsPopover
+                                config={effectiveConfig}
+                                onConfigChange={(key, value) => updateConfig(key, value)}
+                                placement="topRight"
+                                summary="ratio-count"
+                                triggerVariant="flat"
+                                panelVariant="app"
+                                maxCount={10}
+                                triggerIcon={<SlidersHorizontal className="size-3.5" />}
+                                buttonClassName="!h-8 max-w-[8rem] truncate !px-1.5 sm:max-w-none"
+                            />
+                            <Tooltip title={t("workbench.generate")}>
+                                <Button type="primary" shape="circle" icon={<ArrowUp className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()} aria-label={t("workbench.generate")} />
+                            </Tooltip>
                         </div>
                     </div>
+                </div>
+            </div>
 
-                    <div className="thin-scrollbar rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:min-h-0 lg:overflow-y-auto lg:p-5">
-                        <div className="mb-4 flex items-center justify-between gap-3">
-                            <div>
-                                <h2 className="text-xl font-semibold">{t("workbench.results")}</h2>
-                            </div>
-                            {running ? <Tag className="m-0 px-2 py-1">{t("workbench.waiting", { time: formatDuration(elapsedMs) })}</Tag> : null}
-                        </div>
-                        {results.length ? (
-                            <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">
-                                {results.map((result, index) =>
-                                    result.status === "success" && result.image ? (
-                                        <ResultImageCard key={result.id} image={result.image} index={index} onEdit={addResultToReferences} onDownload={downloadImage} onSaveAsset={saveResultToAssets} />
-                                    ) : result.status === "failed" ? (
-                                        <FailedImageCard key={result.id} error={result.error || t("workbench.generationFailed")} onRetry={() => retryResult(index)} />
-                                    ) : (
-                                        <PendingImageCard key={result.id} />
-                                    ),
-                                )}
-                            </div>
-                        ) : (
-                            <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-stone-300 text-center dark:border-stone-700 lg:min-h-[560px]">
-                                <ImagePlus className="mb-4 size-11 text-stone-400" />
-                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("imageWorkbench.empty")} />
-                            </div>
-                        )}
-                    </div>
-                </section>
-            </main>
             <input
                 ref={fileInputRef}
                 type="file"
@@ -529,44 +553,122 @@ export default function ImagePage() {
                     event.target.value = "";
                 }}
             />
-            <Drawer title={t("workbench.logs")} placement="bottom" size="large" open={logsOpen} onClose={() => setLogsOpen(false)}>
-                <LogPanel
-                    logs={logs}
-                    selectedLogIds={selectedLogIds}
-                    activeLogId={previewLog?.id}
-                    onSelectedLogIdsChange={setSelectedLogIds}
-                    onCreateSession={createSession}
-                    onDeleteSelected={() => setDeleteConfirmOpen(true)}
-                    onPreviewLog={(log) => void previewGenerationLog(log)}
-                />
-            </Drawer>
-            <Drawer title={t("workbench.settings")} placement="bottom" size="82vh" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
-                <div className="grid grid-cols-2 gap-3 pb-4">
-                    <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
-                </div>
-            </Drawer>
+            {logsOpen
+                ? createPortal(
+                      <LogPanel
+                          logs={logs}
+                          selectedLogIds={selectedLogIds}
+                          activeLogId={previewLog?.id}
+                          onClose={() => setLogsOpen(false)}
+                          onSelectedLogIdsChange={setSelectedLogIds}
+                          onCreateSession={() => {
+                              createSession();
+                              setLogsOpen(false);
+                          }}
+                          onDeleteSelected={() => setDeleteConfirmOpen(true)}
+                          onPreviewLog={(log) => void previewGenerationLog(log)}
+                      />,
+                      document.body,
+                  )
+                : null}
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
             <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
-            <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")}>
+            <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} zIndex={1200} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")}>
                 {t("workbench.deleteLogsConfirm", { count: selectedLogIds.length })}
             </Modal>
         </div>
     );
 }
 
-function GenerationSettings({ config, model, updateConfig, openConfigDialog }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+function ThreadTurn({
+    prompt,
+    references,
+    tags,
+    failCount,
+    images,
+    results,
+    onPromptClick,
+    onEdit,
+    onDownload,
+    onSaveAsset,
+    onRetry,
+}: {
+    prompt: string;
+    references: ReferenceImage[];
+    tags?: string[];
+    failCount?: number;
+    images?: GeneratedImage[];
+    results?: GenerationResult[];
+    onPromptClick?: () => void;
+    onEdit: (image: GeneratedImage, index: number) => void;
+    onDownload: (image: GeneratedImage, index: number) => void;
+    onSaveAsset: (image: GeneratedImage, index: number) => void;
+    onRetry?: (index: number) => void;
+}) {
     const { t } = useTranslation();
+    const mapped = results?.length ? results : (images || []).map((image) => ({ id: image.id, status: "success" as const, image }));
+    const slots = mapped.length ? mapped : failCount ? [{ id: "failed", status: "failed" as const, error: t("workbench.generationFailed") }] : [];
+    const bubbleClass = "flex max-w-[min(100%,20rem)] flex-col items-stretch rounded-2xl bg-stone-200 px-3.5 py-2.5 text-left dark:bg-stone-800";
+
+    return (
+        <article className="space-y-1.5">
+            <div className="flex justify-end">
+                {onPromptClick ? (
+                    <button type="button" className={bubbleClass} onClick={onPromptClick} title={t("imageWorkbench.fillComposer")}>
+                        <ThreadPrompt prompt={prompt} references={references} />
+                    </button>
+                ) : (
+                    <div className={bubbleClass}>
+                        <ThreadPrompt prompt={prompt} references={references} />
+                    </div>
+                )}
+            </div>
+            <div className="flex justify-start">
+                <div className="max-w-[min(100%,20rem)] space-y-1.5">
+                    <div className={slots.length > 1 ? "grid grid-cols-2 gap-2" : "space-y-2"}>
+                        {slots.map((result, index) =>
+                            result.status === "success" && result.image ? (
+                                <ResultImageCard key={result.id} image={result.image} index={index} onEdit={onEdit} onDownload={onDownload} onSaveAsset={onSaveAsset} />
+                            ) : result.status === "failed" ? (
+                                <FailedImageCard key={result.id} error={result.error || t("workbench.generationFailed")} onRetry={onRetry ? () => onRetry(index) : undefined} />
+                            ) : (
+                                <PendingImageCard key={result.id} />
+                            ),
+                        )}
+                    </div>
+                    {tags?.length ? (
+                        <div className="flex flex-wrap gap-1">
+                            {tags.map((tag) => (
+                                <Tag key={tag} className="m-0 rounded-md px-1.5 text-xs leading-5">
+                                    {tag}
+                                </Tag>
+                            ))}
+                        </div>
+                    ) : null}
+                </div>
+            </div>
+        </article>
+    );
+}
+
+function ThreadPrompt({ prompt, references }: { prompt: string; references: ReferenceImage[] }) {
+    const previewItems = references.map((item) => item.dataUrl || previewUrlFor(item.storageKey)).filter(Boolean);
 
     return (
         <>
-            <label className="col-span-2 block min-w-0 sm:col-span-1">
-                <span className="mb-1.5 block text-sm font-semibold sm:mb-2 sm:text-base">{t("workbench.model")}</span>
-                <ModelPicker config={config} value={model} onChange={(value) => updateConfig("imageModel", value)} capability="image" fullWidth onMissingConfig={() => openConfigDialog(false)} />
-            </label>
-            <div className="col-span-2">
-                <ImageSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" maxCount={10} />
-            </div>
+            {references.length ? (
+                <div className="mb-2 flex flex-wrap justify-end gap-1.5" onClick={(event) => event.stopPropagation()}>
+                    <Image.PreviewGroup items={previewItems} preview={{ zIndex: 1300 }}>
+                        {references.map((item, index) => (
+                            <div key={item.id} className="relative size-16 overflow-hidden rounded-lg bg-stone-300 dark:bg-stone-700">
+                                <Image src={previewUrlFor(item.storageKey) || item.dataUrl} preview={{ src: item.dataUrl || previewUrlFor(item.storageKey) }} alt={item.name} classNames={{ root: "block size-full", img: "!h-full !w-full object-cover" }} />
+                                <span className="pointer-events-none absolute left-0.5 top-0.5 rounded bg-black/60 px-1 text-[10px] leading-4 text-white">{imageReferenceLabel(index)}</span>
+                            </div>
+                        ))}
+                    </Image.PreviewGroup>
+                </div>
+            ) : null}
+            <p className="whitespace-pre-wrap text-left text-sm leading-5 text-stone-900 dark:text-stone-100">{prompt}</p>
         </>
     );
 }
@@ -587,33 +689,26 @@ function ResultImageCard({
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
     return (
-        <div className="overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
-            <Image src={previewUrlFor(image.storageKey) || image.dataUrl} preview={{ src: image.dataUrl }} alt={t("imageWorkbench.resultAlt", { count: index + 1 })} className="aspect-square object-cover" />
-            <div className="space-y-2 border-t border-stone-200 px-3 py-2.5 dark:border-stone-800">
-                <div className="flex min-w-0 gap-x-2 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
-                    <span>
-                        {image.width}x{image.height}
-                    </span>
-                    <span>{formatBytes(image.bytes)}</span>
-                    <span>{formatDuration(image.durationMs)}</span>
-                </div>
-                <div className="grid min-w-0 grid-cols-3 gap-2">
-                    <Tooltip title={t("common.addToAssets")}>
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => void onSaveAsset(image, index)}>
-                            {t("common.addToAssets")}
-                        </Button>
-                    </Tooltip>
-                    <Tooltip title={t("imageWorkbench.addReference")}>
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<PenLine className="size-3.5" />} onClick={() => void onEdit(image, index)}>
-                            {t("imageWorkbench.addReference")}
-                        </Button>
-                    </Tooltip>
-                    <Tooltip title={t("common.download")}>
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(image, index)}>
-                            {t("common.download")}
-                        </Button>
-                    </Tooltip>
-                </div>
+        <div className="group overflow-hidden rounded-2xl">
+            <Image
+                src={previewUrlFor(image.storageKey) || image.dataUrl}
+                preview={{ src: image.dataUrl }}
+                alt={t("imageWorkbench.resultAlt", { count: index + 1 })}
+                className="max-h-64 w-auto max-w-full object-contain"
+            />
+            <div className="mt-1 flex items-center gap-0.5">
+                <Tooltip title={t("common.addToAssets")}>
+                    <Button type="text" size="small" className="!h-7 !w-7 !min-w-7 !p-0" icon={<FolderPlus className="size-3.5" />} onClick={() => void onSaveAsset(image, index)} />
+                </Tooltip>
+                <Tooltip title={t("imageWorkbench.addReference")}>
+                    <Button type="text" size="small" className="!h-7 !w-7 !min-w-7 !p-0" icon={<PenLine className="size-3.5" />} onClick={() => void onEdit(image, index)} />
+                </Tooltip>
+                <Tooltip title={t("common.download")}>
+                    <Button type="text" size="small" className="!h-7 !w-7 !min-w-7 !p-0" icon={<Download className="size-3.5" />} onClick={() => onDownload(image, index)} />
+                </Tooltip>
+                <span className="ml-1 text-[11px] text-stone-400">
+                    {image.width}×{image.height}
+                </span>
             </div>
         </div>
     );
@@ -622,37 +717,26 @@ function ResultImageCard({
 function PendingImageCard() {
     const { t } = useTranslation();
     return (
-        <div className="relative aspect-square overflow-hidden rounded-lg border border-dashed border-stone-300 bg-stone-50 dark:border-stone-700 dark:bg-stone-900">
-            <div
-                className="absolute inset-0 opacity-60"
-                style={{
-                    backgroundImage: "radial-gradient(circle, rgba(120,113,108,0.35) 1.4px, transparent 1.6px)",
-                    backgroundSize: "16px 16px",
-                }}
-            />
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-stone-500 dark:text-stone-400">
-                <LoaderCircle className="size-6 animate-spin" />
-                <span>{t("workbench.generating")}</span>
-            </div>
+        <div className="flex h-40 w-40 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-stone-300 bg-stone-100 text-sm text-stone-500 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-400">
+            <LoaderCircle className="size-5 animate-spin" />
+            <span>{t("workbench.generating")}</span>
         </div>
     );
 }
 
-function FailedImageCard({ error, onRetry }: { error: string; onRetry: () => void }) {
+function FailedImageCard({ error, onRetry }: { error: string; onRetry?: () => void }) {
     const { t } = useTranslation();
     return (
-        <div className="overflow-hidden rounded-lg border border-red-200 bg-red-50 dark:border-red-950 dark:bg-red-950/20">
-            <div className="flex aspect-square flex-col items-center justify-center gap-3 p-5 text-center">
-                <div className="text-sm font-medium text-red-600 dark:text-red-300">{t("workbench.failed")}</div>
-                <Typography.Paragraph ellipsis={{ rows: 4 }} className="!mb-0 !text-xs !text-red-500 dark:!text-red-300">
-                    {error}
-                </Typography.Paragraph>
-            </div>
-            <div className="flex justify-end border-t border-red-200 p-3 dark:border-red-950">
-                <Button size="small" danger onClick={onRetry}>
+        <div className="rounded-2xl bg-stone-100 px-3.5 py-2.5 dark:bg-stone-900">
+            <p className="text-sm text-stone-800 dark:text-stone-200">{t("workbench.failed")}</p>
+            <Typography.Paragraph ellipsis={{ rows: 3 }} className="!mb-0 !mt-0.5 !text-xs !text-stone-500 dark:!text-stone-400">
+                {error}
+            </Typography.Paragraph>
+            {onRetry ? (
+                <Button type="link" size="small" className="!h-7 !px-0" onClick={onRetry}>
                     {t("workbench.retry")}
                 </Button>
-            </div>
+            ) : null}
         </div>
     );
 }
@@ -665,6 +749,7 @@ function LogPanel({
     logs,
     selectedLogIds,
     activeLogId,
+    onClose,
     onSelectedLogIdsChange,
     onCreateSession,
     onDeleteSelected,
@@ -673,6 +758,7 @@ function LogPanel({
     logs: GenerationLog[];
     selectedLogIds: string[];
     activeLogId?: string;
+    onClose: () => void;
     onSelectedLogIdsChange: (ids: string[]) => void;
     onCreateSession: () => void;
     onDeleteSelected: () => void;
@@ -682,90 +768,100 @@ function LogPanel({
     const allSelected = Boolean(logs.length) && selectedLogIds.length === logs.length;
     const toggleAll = () => onSelectedLogIdsChange(allSelected ? [] : logs.map((log) => log.id));
 
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") onClose();
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [onClose]);
+
     return (
-        <>
-            <div className="mb-3 flex items-center justify-between gap-3">
-                <div>
-                    <h2 className="text-base font-semibold">{t("workbench.logs")}</h2>
+        <div className="fixed inset-0 z-[1100] flex flex-col bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
+            <header className="shrink-0 border-b border-stone-200/80 px-3 pb-3 pt-[max(0.5rem,env(safe-area-inset-top))] dark:border-stone-800 sm:px-4">
+                <div className="flex items-center gap-2">
+                    <Button type="text" size="small" className="!-ml-1" icon={<X className="size-4" />} onClick={onClose} aria-label={t("common.close")} />
+                    <div className="min-w-0 flex-1">
+                        <h2 className="truncate text-lg font-semibold leading-tight">{t("workbench.logs")}</h2>
+                        <p className="mt-0.5 text-xs text-stone-500 dark:text-stone-400">{t("workbench.logCount", { count: logs.length })}</p>
+                    </div>
                 </div>
-                <Tag className="m-0">{logs.length}</Tag>
+                <div className="mt-3 flex flex-wrap items-center gap-1">
+                    <Button type="text" size="small" icon={<Plus className="size-3.5" />} onClick={onCreateSession}>
+                        {t("workbench.new")}
+                    </Button>
+                    <Button type="text" size="small" icon={<CheckSquare className="size-3.5" />} disabled={!logs.length} onClick={toggleAll}>
+                        {allSelected ? t("common.cancel") : t("workbench.selectAll")}
+                    </Button>
+                    <Button type="text" size="small" danger icon={<Trash2 className="size-3.5" />} disabled={!selectedLogIds.length} onClick={onDeleteSelected}>
+                        {t("common.delete")}
+                    </Button>
+                </div>
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 sm:px-3">
+                {logs.length ? (
+                    <div className="columns-2 gap-1.5 sm:columns-3 lg:columns-4 2xl:columns-5">
+                        {logs.map((log) => (
+                            <LogCard
+                                key={log.id}
+                                log={log}
+                                selected={selectedLogIds.includes(log.id)}
+                                active={activeLogId === log.id}
+                                onSelectedChange={(checked) => onSelectedLogIdsChange(checked ? [...selectedLogIds, log.id] : selectedLogIds.filter((id) => id !== log.id))}
+                                onClick={() => onPreviewLog(log)}
+                            />
+                        ))}
+                    </div>
+                ) : (
+                    <div className="flex min-h-48 items-center justify-center text-sm text-stone-500">{t("workbench.noLogs")}</div>
+                )}
             </div>
-            <div className="mb-4 flex flex-wrap gap-2">
-                <Button size="small" icon={<Plus className="size-3.5" />} onClick={onCreateSession}>
-                    {t("workbench.new")}
-                </Button>
-                <Button size="small" icon={<CheckSquare className="size-3.5" />} disabled={!logs.length} onClick={toggleAll}>
-                    {allSelected ? t("common.cancel") : t("workbench.selectAll")}
-                </Button>
-                <Button size="small" danger icon={<Trash2 className="size-3.5" />} disabled={!selectedLogIds.length} onClick={onDeleteSelected}>
-                    {t("common.delete")}
-                </Button>
-            </div>
-            <div className="space-y-3">
-                {logs.map((log) => (
-                    <LogCard
-                        key={log.id}
-                        log={log}
-                        selected={selectedLogIds.includes(log.id)}
-                        active={activeLogId === log.id}
-                        onSelectedChange={(checked) => onSelectedLogIdsChange(checked ? [...selectedLogIds, log.id] : selectedLogIds.filter((id) => id !== log.id))}
-                        onClick={() => onPreviewLog(log)}
-                    />
-                ))}
-                {!logs.length ? <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-stone-300 text-center text-sm text-stone-500 dark:border-stone-700">{t("workbench.noLogs")}</div> : null}
-            </div>
-        </>
+        </div>
     );
 }
 
 function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: GenerationLog; selected: boolean; active: boolean; onSelectedChange: (checked: boolean) => void; onClick: () => void }) {
-    const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
-    const thumbnails = log.images.filter((image) => image.dataUrl).slice(0, 4);
+    const images = log.images.filter((image) => previewUrlFor(image.storageKey) || image.dataUrl);
+    const thumb = images[0];
+    const extra = Math.max(0, images.length - 1);
+    const previewItems = images.map((image) => image.dataUrl || previewUrlFor(image.storageKey)).filter(Boolean);
+    const hoverReveal = thumb ? "opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100" : "opacity-100";
+    const selectedRing = selected || active ? "ring-2 ring-stone-400/90 dark:ring-stone-500" : "";
 
     return (
-        <button
-            type="button"
-            className={`block w-full rounded-lg border p-2 text-left transition ${active ? "border-stone-900 bg-blue-50 dark:border-stone-100 dark:bg-blue-950/20" : "border-stone-200 bg-background hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900"}`}
-            onClick={onClick}
-        >
-            <div className="grid grid-cols-[minmax(128px,1fr)_auto] gap-2">
-                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2">
-                    <Checkbox className="mt-0.5" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelectedChange(event.target.checked)} />
-                    <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold leading-5">{log.title}</div>
-                        {thumbnails.length ? (
-                            <div className="mt-2 flex gap-1 overflow-hidden">
-                                {thumbnails.map((image) => (
-                                    <img key={image.id} src={previewUrlFor(image.storageKey) || image.dataUrl} alt="" className="size-8 shrink-0 rounded-md object-cover" />
-                                ))}
-                            </div>
-                        ) : null}
+        <article className={`group mb-1.5 break-inside-avoid overflow-hidden rounded-md bg-stone-200 dark:bg-stone-800 ${selectedRing}`}>
+            <div className="relative">
+                {thumb ? (
+                    <Image.PreviewGroup items={previewItems} preview={{ zIndex: 1300 }}>
+                        <Image
+                            src={previewUrlFor(thumb.storageKey) || thumb.dataUrl}
+                            preview={{ src: thumb.dataUrl || previewUrlFor(thumb.storageKey) }}
+                            alt=""
+                            classNames={{ root: "block w-full", img: "block h-auto w-full" }}
+                            style={thumb.width && thumb.height ? { aspectRatio: `${thumb.width} / ${thumb.height}` } : undefined}
+                        />
+                    </Image.PreviewGroup>
+                ) : (
+                    <div className="grid min-h-36 w-full place-items-center text-stone-400">
+                        <ImagePlus className="size-6" />
                     </div>
-                </div>
-                <div className="grid justify-items-end gap-2">
-                    <div className="flex gap-1">
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="blue">
-                            {t("workbench.successCount", { count: log.successCount ?? log.imageCount })}
-                        </Tag>
-                        {log.failCount ? (
-                            <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="red">
-                                {t("workbench.failCount", { count: log.failCount })}
-                            </Tag>
-                        ) : null}
-                    </div>
-                    <div className="flex flex-wrap justify-end gap-1">
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{t("workbench.itemCount", { count: log.imageCount })}</Tag>
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="green">
-                            {formatDuration(log.durationMs)}
-                        </Tag>
-                    </div>
-                    <div className="flex justify-end">
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.time}</Tag>
-                    </div>
-                </div>
+                )}
+                <button
+                    type="button"
+                    className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/55 to-transparent p-2.5 pt-10 text-left ${hoverReveal}`}
+                    onClick={onClick}
+                    title={log.prompt || log.title}
+                >
+                    <p className="line-clamp-3 text-xs leading-5 text-white">{log.prompt || log.title}</p>
+                    <p className="mt-1 text-[11px] text-white/70">{[log.time, formatDuration(log.durationMs)].filter(Boolean).join(" · ")}</p>
+                </button>
+                <span className="absolute left-1.5 top-1.5 z-10 rounded bg-white/90 px-0.5 dark:bg-black/55" onClick={(event) => event.stopPropagation()}>
+                    <Checkbox checked={selected} onChange={(event) => onSelectedChange(event.target.checked)} />
+                </span>
+                {extra ? <span className="pointer-events-none absolute right-1.5 top-1.5 rounded bg-black/60 px-1 text-[10px] leading-4 text-white">+{extra}</span> : null}
             </div>
-        </button>
+        </article>
     );
 }
 

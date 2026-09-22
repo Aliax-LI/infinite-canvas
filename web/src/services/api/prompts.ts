@@ -3,7 +3,7 @@ import localforage from "localforage";
 import { runPromptSource, type RawPrompt } from "./prompt-source-runtime";
 import { usePromptSourceStore } from "@/stores/use-prompt-source-store";
 import i18n from "@/i18n";
-import type { PromptSource } from "./prompt-source-presets";
+import { isDeferredPromptSource, promptSourceFilterLabel, type PromptSource } from "./prompt-source-presets";
 
 export type Prompt = RawPrompt & {
     sourceId: string;
@@ -13,10 +13,30 @@ export type Prompt = RawPrompt & {
 
 export const ALL_PROMPTS_OPTION = "all";
 
+const RESTRICTED_PROMPT_PATTERN = /nsfw|违纪|r-?18|18\+|色情/i;
+const NOISE_PROMPT_TAG = /^(official|unknown|unkown|featured)$/i;
+const CHINESE_TEXT = /[\u4e00-\u9fff]/;
+
+export function isRestrictedPromptTag(tag: string) {
+    return RESTRICTED_PROMPT_PATTERN.test(tag);
+}
+
+export function isBrowseablePromptTag(tag: string) {
+    const value = tag.trim();
+    if (!value || !CHINESE_TEXT.test(value) || isRestrictedPromptTag(value) || NOISE_PROMPT_TAG.test(value) || value.includes("@") || value.startsWith("#") || value.length > 20) return false;
+    return !(value.includes("/") && /[-_]/.test(value));
+}
+
+export function isRestrictedPrompt(item: Pick<Prompt, "title" | "prompt" | "tags">) {
+    return RESTRICTED_PROMPT_PATTERN.test(item.title) || RESTRICTED_PROMPT_PATTERN.test(item.prompt) || item.tags.some(isRestrictedPromptTag);
+}
+
+export type PromptFilterOption = { value: string; label: string };
+
 export type PromptListResponse = {
     items: Prompt[];
     tags: string[];
-    categories: string[];
+    categories: PromptFilterOption[];
     total: number;
 };
 
@@ -48,6 +68,7 @@ type SourceCache = PromptSourceStatus & {
 const cacheTtlMs = 1000 * 60 * 60;
 const promptCacheStore = localforage.createInstance({ name: "infinite-canvas", storeName: "prompt_cache" });
 const loadingSources = new Map<string, Promise<PromptSourceRefreshResult>>();
+const memoryItems = new Map<string, { signature: string; items: Prompt[] }>();
 
 function enabledSources() {
     return usePromptSourceStore.getState().sources.filter((source) => source.enabled);
@@ -85,7 +106,9 @@ async function refreshSourceRecord(source: PromptSource): Promise<PromptSourceRe
         const items = withSourceMeta(source, await runPromptSource(source));
         const lastSuccessAt = new Date().toISOString();
         const cache: SourceCache = { sourceId: source.id, items, count: items.length, fetchedAt: Date.now(), lastSuccessAt, lastError: "", signature: sourceSignature(source) };
-        await promptCacheStore.setItem(cacheKey(source.id), cache);
+        memoryItems.set(source.id, { signature: cache.signature, items });
+        if (isDeferredPromptSource(source)) void promptCacheStore.setItem(cacheKey(source.id), cache);
+        else await promptCacheStore.setItem(cacheKey(source.id), cache);
         return { sourceId: source.id, sourceName: source.name, count: items.length, lastSuccessAt, lastError: "", success: true };
     } catch (error) {
         const lastError = error instanceof Error ? error.message : String(error);
@@ -112,20 +135,38 @@ function getOrStartRefresh(source: PromptSource) {
 }
 
 async function getSourcePrompts(source: PromptSource): Promise<Prompt[]> {
+    const signature = sourceSignature(source);
+    const remembered = memoryItems.get(source.id);
+    if (remembered?.signature === signature) return remembered.items;
     const cached = await readSourceCache(source.id);
     if (cached) {
-        const stale = cached.signature !== sourceSignature(source) || Date.now() - cached.fetchedAt >= cacheTtlMs;
+        const items = withSourceMeta(source, cached.items);
+        memoryItems.set(source.id, { signature: cached.signature, items });
+        const stale = cached.signature !== signature || Date.now() - cached.fetchedAt >= cacheTtlMs;
         if (stale) void getOrStartRefresh(source).catch(() => undefined);
-        return withSourceMeta(source, cached.items);
+        return items;
     }
     const result = await getOrStartRefresh(source);
     if (!result.success) throw new Error(result.lastError);
-    return (await readSourceCache(source.id))?.items || [];
+    return memoryItems.get(source.id)?.items || (await readSourceCache(source.id))?.items || [];
+}
+
+function uniqueDeferredSources() {
+    return enabledSources().filter(isDeferredPromptSource).filter((source, index, sources) => sources.findIndex((item) => item.url === source.url) === index);
+}
+
+function cachedDeferredPrompts() {
+    return uniqueDeferredSources().flatMap((source) => {
+        const remembered = memoryItems.get(source.id);
+        return remembered?.signature === sourceSignature(source) ? remembered.items : [];
+    });
 }
 
 async function getAllPrompts(): Promise<Prompt[]> {
     const settled = await Promise.all(
-        enabledSources().map(async (source) => {
+        enabledSources()
+            .filter((source) => !isDeferredPromptSource(source))
+            .map(async (source) => {
             try {
                 return await getSourcePrompts(source);
             } catch {
@@ -133,22 +174,44 @@ async function getAllPrompts(): Promise<Prompt[]> {
             }
         }),
     );
-    return settled.flat();
+    return [...settled.flat(), ...cachedDeferredPrompts()];
+}
+
+export async function prefetchDeferredPromptSources() {
+    const missing = uniqueDeferredSources().filter((source) => memoryItems.get(source.id)?.signature !== sourceSignature(source));
+    if (missing.length === 0) return false;
+    await Promise.all(missing.map((source) => getSourcePrompts(source).catch(() => [] as Prompt[])));
+    return missing.some((source) => Boolean(memoryItems.get(source.id)));
+}
+
+function sourceFilterOptions() {
+    return enabledSources().flatMap((source) => {
+        const label = promptSourceFilterLabel(source);
+        return label ? [{ value: source.name, label }] : [];
+    });
+}
+
+async function loadPromptItems(category: string, keyword: string) {
+    const deferred = enabledSources().filter(isDeferredPromptSource);
+    const selected = deferred.find((source) => category === source.name);
+    if (selected) return getSourcePrompts(selected);
+    const extras = keyword.trim() ? deferred.filter((source, index) => deferred.findIndex((item) => item.url === source.url) === index) : [];
+    const groups = await Promise.all([getAllPrompts(), ...extras.map((source) => getSourcePrompts(source).catch(() => [] as Prompt[]))]);
+    return groups.flat();
 }
 
 export async function fetchPrompts({ keyword = "", tag = [], category = ALL_PROMPTS_OPTION, page = 1, pageSize = 20 }: { keyword?: string; tag?: string[]; category?: string; page?: number; pageSize?: number } = {}) {
-    const items = await getAllPrompts();
+    const items = (await loadPromptItems(category, keyword)).filter((item) => !isRestrictedPrompt(item));
     const normalizedKeyword = keyword.trim().toLowerCase();
     const normalizedPage = Math.max(1, page);
     const normalizedPageSize = Math.max(1, Math.min(100, pageSize));
     const withoutTagFilter = filterPrompts(items, { keyword: normalizedKeyword, category, tags: [] });
-    const filtered = filterPrompts(items, { keyword: normalizedKeyword, category, tags: tag });
-    const categories = enabledSources().map((source) => source.name);
+    const filtered = filterPrompts(items, { keyword: normalizedKeyword, category, tags: tag }).toSorted((left, right) => promptTimestamp(right) - promptTimestamp(left));
 
     return {
         items: filtered.slice((normalizedPage - 1) * normalizedPageSize, normalizedPage * normalizedPageSize),
         tags: collectTags(withoutTagFilter),
-        categories,
+        categories: sourceFilterOptions(),
         total: filtered.length,
     };
 }
@@ -203,6 +266,11 @@ function summarizeRefresh(results: PromptSourceRefreshResult[]): PromptSourceRef
     };
 }
 
+function promptTimestamp(item: Prompt) {
+    const time = Date.parse(item.updatedAt || item.createdAt);
+    return Number.isNaN(time) ? 0 : time;
+}
+
 function filterPrompts(items: Prompt[], options: { keyword: string; category: string; tags: string[] }) {
     return items.filter((item) => {
         if (isActiveOption(options.category) && item.category !== options.category) return false;
@@ -213,7 +281,17 @@ function filterPrompts(items: Prompt[], options: { keyword: string; category: st
 }
 
 function collectTags(items: Prompt[]) {
-    return Array.from(new Set(items.flatMap((item) => item.tags).filter(Boolean)));
+    const counts = new Map<string, number>();
+    for (const item of items) {
+        for (const tag of item.tags) {
+            if (!isBrowseablePromptTag(tag)) continue;
+            counts.set(tag, (counts.get(tag) || 0) + 1);
+        }
+    }
+    return [...counts.entries()]
+        .filter(([, count]) => count >= 2)
+        .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], "zh"))
+        .map(([tag]) => tag);
 }
 
 function isActiveOption(value: string) {

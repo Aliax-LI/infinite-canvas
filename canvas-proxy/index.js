@@ -46,11 +46,18 @@ function readTarget(url) {
     return /^https?:\/\/[^/]/i.test(target) ? target : "";
 }
 
-function requestHeaders(req) {
+function requestHeaders(req, target) {
     const headers = {};
     for (const [key, value] of Object.entries(req.headers)) {
         if (SKIP_REQUEST_HEADERS.has(key) || value === undefined) continue;
         headers[key] = Array.isArray(value) ? value.join(", ") : value;
+    }
+    try {
+        const origin = new URL(target).origin;
+        headers.origin = origin;
+        headers.referer = `${origin}/`;
+    } catch {
+        // Keep forwarding even if the embedded target URL cannot be parsed.
     }
     return headers;
 }
@@ -75,7 +82,7 @@ function logForward(method, target, outcome, startedAt) {
 
 async function forward(req, res, target) {
     const body = req.method === "GET" || req.method === "HEAD" ? undefined : await readBody(req);
-    const upstream = await fetch(target, { method: req.method, headers: requestHeaders(req), body, redirect: "follow" });
+    const upstream = await fetch(target, { method: req.method, headers: requestHeaders(req, target), body, redirect: "follow" });
     // Logged as soon as the status line arrives, so a long SSE stream still shows up immediately.
     res.writeHead(upstream.status, responseHeaders(upstream));
     if (!upstream.body) {

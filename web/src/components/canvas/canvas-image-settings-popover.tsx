@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Settings2 } from "lucide-react";
 import { Button } from "antd";
@@ -6,6 +6,8 @@ import { useTranslation } from "react-i18next";
 
 import { ImageSettingsPanel, imageQualityLabel, imageSizeLabel } from "@/components/image-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { inferMediaRatio } from "@/lib/media-size";
+import { cn } from "@/lib/utils";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { AiConfig } from "@/stores/use-config-store";
 
@@ -18,9 +20,26 @@ type CanvasImageSettingsPopoverProps = {
     getPopupContainer?: (triggerNode: HTMLElement) => HTMLElement;
     placement?: "topLeft" | "top" | "topRight" | "bottomLeft" | "bottom" | "bottomRight";
     autoAdjustOverflow?: boolean;
+    /** 工作台：仅展示「比例｜张数」 */
+    summary?: "quality-size-count" | "ratio-count";
+    triggerIcon?: ReactNode;
+    triggerVariant?: "canvas" | "flat";
+    panelVariant?: "canvas" | "app";
+    maxCount?: number;
 };
 
-export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChange, buttonClassName, placement = "topLeft" }: CanvasImageSettingsPopoverProps) {
+export function CanvasImageSettingsPopover({
+    config,
+    onConfigChange,
+    onOpenChange,
+    buttonClassName,
+    placement = "topLeft",
+    summary = "quality-size-count",
+    triggerIcon,
+    triggerVariant = "canvas",
+    panelVariant = "canvas",
+    maxCount = 15,
+}: CanvasImageSettingsPopoverProps) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
@@ -28,7 +47,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
     const [open, setOpen] = useState(false);
     const [buttonRect, setButtonRect] = useState<DOMRect | null>(null);
     const quality = config.quality || "auto";
-    const count = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
+    const count = Math.max(1, Math.min(maxCount, Math.floor(Math.abs(Number(config.count)) || 1)));
     const activeSize = config.size || "auto";
     const updateOpen = (nextOpen: boolean) => {
         setOpen(nextOpen);
@@ -58,15 +77,40 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
         };
     }, [onOpenChange, open]);
 
-    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} /> : null;
+    const ratio = inferMediaRatio(activeSize);
+    const ratioLabel = ratio === "auto" ? t("settingsPanels.common.auto") : ratio;
+    const triggerLabel =
+        summary === "ratio-count" ? (
+            <>
+                {ratioLabel}｜{t("settingsPanels.image.images", { count })}
+            </>
+        ) : (
+            <>
+                {imageQualityLabel(quality)} · {imageSizeLabel(activeSize)} · {t("canvas.controls.images", { count })}
+            </>
+        );
+
+    const panel =
+        open && buttonRect ? (
+            <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} panelVariant={panelVariant} maxCount={maxCount} />
+        ) : null;
 
     return (
         <>
             <span ref={buttonRef} className="inline-flex min-w-0">
-                <Button size="small" type="text" className={buttonClassName || "!h-8 !max-w-[180px] !justify-start !rounded-full !px-2.5"} style={{ background: theme.node.fill, color: theme.node.text }} icon={<Settings2 className="size-3.5" />} onClick={() => updateOpen(!open)}>
-                    <span className="truncate">
-                        {imageQualityLabel(quality)} · {imageSizeLabel(activeSize)} · {t("canvas.controls.images", { count })}
-                    </span>
+                <Button
+                    size="small"
+                    type="text"
+                    aria-expanded={open}
+                    className={cn(
+                        buttonClassName || (triggerVariant === "flat" ? "!h-8 !justify-start !px-1.5" : "!h-8 !max-w-[180px] !justify-start !rounded-full !px-2.5"),
+                        open && triggerVariant === "flat" && "bg-black/5 dark:bg-white/10",
+                    )}
+                    style={triggerVariant === "canvas" ? { background: theme.node.fill, color: theme.node.text } : undefined}
+                    icon={triggerIcon ?? <Settings2 className="size-3.5" />}
+                    onClick={() => updateOpen(!open)}
+                >
+                    <span className="truncate">{triggerLabel}</span>
                 </Button>
             </span>
             {panel}
@@ -81,6 +125,8 @@ function ImageSettingsPortal({
     theme,
     config,
     onConfigChange,
+    panelVariant,
+    maxCount,
 }: {
     buttonRect: DOMRect;
     panelRef: RefObject<HTMLDivElement | null>;
@@ -88,8 +134,10 @@ function ImageSettingsPortal({
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     config: AiConfig;
     onConfigChange: (key: keyof AiConfig, value: string) => void;
+    panelVariant: CanvasImageSettingsPopoverProps["panelVariant"];
+    maxCount: number;
 }) {
-    const width = 356;
+    const width = panelVariant === "app" ? 372 : 356;
     const gap = 8;
     const margin = 12;
     const alignRight = placement?.endsWith("Right");
@@ -102,24 +150,28 @@ function ImageSettingsPortal({
         width,
         left: Math.max(margin, Math.min(window.innerWidth - width - margin, left)),
         ...(topPlacement ? { bottom: window.innerHeight - buttonRect.top + gap, maxHeight: Math.max(260, buttonRect.top - margin * 2) } : { top: buttonRect.bottom + gap, maxHeight: Math.max(260, window.innerHeight - buttonRect.bottom - margin * 2) }),
-        background: theme.toolbar.panel,
-        borderRadius: 18,
-        boxShadow: "0 18px 54px rgba(28, 25, 23, 0.16)",
-        padding: 18,
         overflowY: "auto",
-        color: theme.node.text,
+        ...(panelVariant === "app"
+            ? {}
+            : {
+                  background: theme.toolbar.panel,
+                  borderRadius: 18,
+                  boxShadow: "0 18px 54px rgba(28, 25, 23, 0.16)",
+                  padding: 18,
+                  color: theme.node.text,
+              }),
     } as const;
 
     return createPortal(
         <div
             ref={panelRef}
-            className="canvas-image-settings-popover"
+            className={cn("canvas-image-settings-popover", panelVariant === "app" && "rounded-2xl border border-stone-200 bg-card p-4 shadow-xl dark:border-stone-700")}
             style={style}
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
         >
-            <ImageSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" />
+            <ImageSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" maxCount={maxCount} quickCount={Math.min(10, maxCount)} />
         </div>,
         document.body,
     );

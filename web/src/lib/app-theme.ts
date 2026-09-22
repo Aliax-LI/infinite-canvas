@@ -45,10 +45,16 @@ export function getAntThemeConfig(dark: boolean): ThemeConfig {
             controlItemBgHover: color.itemHoverBg,
             controlItemBgActive: color.itemSelectedBg,
             controlItemBgActiveHover: color.itemSelectedHoverBg,
+            lineWidthFocus: 0,
         },
         components: {
             Button: {
                 primaryShadow: "none",
+            },
+            Input: {
+                activeShadow: "none",
+                activeBorderColor: dark ? "#78716c" : "#78716c",
+                hoverBorderColor: dark ? "#57534e" : "#a8a29e",
             },
             Dropdown: {
                 colorBgElevated: color.elevatedBg,

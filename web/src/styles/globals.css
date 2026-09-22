@@ -607,3 +607,70 @@
     border-radius: 0.6rem;
     font-size: 0.75rem;
 }
+
+/* 提示词中心标签芯片：原生 button 在 ant-app 内会继承文字色，需显式设色 */
+button.prompt-tag-chip {
+    border-color: transparent;
+    background: rgba(28, 25, 23, 0.05);
+    color: #57534e;
+    font-weight: 500;
+}
+
+button.prompt-tag-chip:hover {
+    border-color: transparent;
+    background: rgba(28, 25, 23, 0.1);
+    color: #1c1917;
+}
+
+button.prompt-tag-chip.prompt-tag-chip--active,
+button.prompt-tag-chip.prompt-tag-chip--active span {
+    border-color: #1c1917 !important;
+    background: #1c1917 !important;
+    color: #ffffff !important;
+    font-weight: 600;
+}
+
+.dark button.prompt-tag-chip {
+    border-color: transparent;
+    background: rgba(255, 255, 255, 0.08);
+    color: #d6d3d1;
+}
+
+.dark button.prompt-tag-chip:hover {
+    border-color: transparent;
+    background: rgba(255, 255, 255, 0.14);
+    color: #fafaf9;
+}
+
+.dark button.prompt-tag-chip.prompt-tag-chip--active,
+.dark button.prompt-tag-chip.prompt-tag-chip--active span {
+    border-color: #fafaf9 !important;
+    background: #fafaf9 !important;
+    color: #0c0a09 !important;
+    font-weight: 600;
+}
+
+button.prompt-card-copy.prompt-card-copy--on-cover,
+button.prompt-card-copy.prompt-card-copy--on-cover span,
+button.prompt-card-copy.prompt-card-copy--on-cover svg {
+    color: #ffffff !important;
+}
+
+/* 提示词中心搜索框：清除黑色阴影填充与突兀边框，使用柔和中性石灰色过渡 */
+.prompt-search-input.ant-input-affix-wrapper,
+.prompt-search-input.ant-input-affix-wrapper-focused,
+.prompt-search-input.ant-input-affix-wrapper:focus,
+.prompt-search-input.ant-input-affix-wrapper:focus-within {
+    box-shadow: none !important;
+    outline: none !important;
+    border-color: rgba(120, 113, 108, 0.4) !important;
+}
+
+.dark .prompt-search-input.ant-input-affix-wrapper,
+.dark .prompt-search-input.ant-input-affix-wrapper-focused,
+.dark .prompt-search-input.ant-input-affix-wrapper:focus,
+.dark .prompt-search-input.ant-input-affix-wrapper:focus-within {
+    box-shadow: none !important;
+    outline: none !important;
+    border-color: rgba(168, 162, 158, 0.35) !important;
+}
