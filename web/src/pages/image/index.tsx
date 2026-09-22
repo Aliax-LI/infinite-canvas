@@ -151,15 +151,54 @@ export default function ImagePage() {
         scrollToBottom(running);
     }, [logs.length, liveTurn, results, running]);
 
-    const addReferences = async (files?: FileList | null) => {
+    const addReferences = async (files?: FileList | File[] | null) => {
         const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+        if (!imageFiles.length) return [];
         const nextReferences = await Promise.all(
-            imageFiles.map(async (file) => {
+            imageFiles.map(async (file, index) => {
                 const image = await uploadImage(file);
-                return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
+                return { id: nanoid(), name: file.name || `image-${index + 1}.png`, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
             }),
         );
         setReferences((value) => [...value, ...nextReferences]);
+        return nextReferences;
+    };
+
+    const handlePaste = async (event: React.ClipboardEvent) => {
+        const clipboardData = event.clipboardData;
+        if (!clipboardData) return;
+
+        const imageFiles: File[] = [];
+        if (clipboardData.files?.length) {
+            for (let i = 0; i < clipboardData.files.length; i++) {
+                const file = clipboardData.files[i];
+                if (file.type.startsWith("image/")) {
+                    imageFiles.push(file);
+                }
+            }
+        }
+        if (!imageFiles.length && clipboardData.items?.length) {
+            for (let i = 0; i < clipboardData.items.length; i++) {
+                const item = clipboardData.items[i];
+                if (item.kind === "file" && item.type.startsWith("image/")) {
+                    const file = item.getAsFile();
+                    if (file) imageFiles.push(file);
+                }
+            }
+        }
+
+        if (imageFiles.length > 0) {
+            event.preventDefault();
+            event.stopPropagation();
+            try {
+                const nextReferences = await addReferences(imageFiles);
+                if (nextReferences.length) {
+                    message.success(t("imageWorkbench.clipboardAdded", { count: nextReferences.length }));
+                }
+            } catch {
+                message.error(t("imageWorkbench.clipboardEmpty"));
+            }
+        }
     };
 
     const addReferencesFromClipboard = async () => {
@@ -497,6 +536,7 @@ export default function ImagePage() {
                 )}
             >
                 <div
+                    onPaste={handlePaste}
                     className={cn(
                         "mx-auto w-full max-w-3xl rounded-3xl border bg-white/95 p-3 shadow-[0_4px_24px_-4px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] backdrop-blur-md transition-all sm:p-3.5 dark:bg-stone-900/90 dark:shadow-[0_8px_32px_-4px_rgba(0,0,0,0.4)]",
                         isReferenceDragActive
@@ -536,6 +576,7 @@ export default function ImagePage() {
                     <Input.TextArea
                         value={prompt}
                         onChange={(event) => setPrompt(event.target.value)}
+                        onPaste={handlePaste}
                         onFocus={() => {
                             setTimeout(() => {
                                 scrollToBottom(true);
