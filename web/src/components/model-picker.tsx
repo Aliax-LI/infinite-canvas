@@ -27,7 +27,6 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     const options = useMemo(() => Array.from(new Set([...(config.channelMode === "local" && !capability ? [value] : []), ...selectableModelsByCapability(config, capability)].filter((model): model is string => Boolean(model)))), [capability, config, value]);
     const current = value || "";
     const pickerPlaceholder = placeholder || t("settingsPanels.model.select");
-    const channelName = current ? modelOptionChannelName(config, current) : null;
     const modelName = current ? modelOptionName(current) : "";
 
     useEffect(() => {
@@ -51,30 +50,22 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
         >
             <SelectTrigger
                 className={cn(
-                    "canvas-composer-model-picker h-8 w-fit max-w-full gap-2 rounded-full border border-input bg-transparent px-3 text-sm font-normal shadow-sm transition-colors",
-                    fullWidth ? "w-full min-w-0 justify-start" : compact ? "min-w-0 max-w-full justify-start px-2.5" : "min-w-[9rem] justify-start",
+                    "canvas-composer-model-picker h-8 w-fit gap-1.5 transition-colors",
                     compact
-                        ? "border-stone-200/90 shadow-none hover:bg-black/[0.04] focus-visible:ring-0 dark:border-stone-700 dark:hover:bg-white/[0.06] data-[state=open]:ring-1 data-[state=open]:ring-stone-300/70 dark:data-[state=open]:ring-stone-600"
-                        : "data-[state=open]:border-ring data-[state=open]:ring-2 data-[state=open]:ring-ring/20",
+                        ? "min-w-0 max-w-[130px] sm:max-w-[220px] justify-start rounded-lg border-0 bg-transparent px-2 text-xs font-medium text-stone-700 shadow-none hover:bg-black/5 hover:text-stone-900 focus-visible:ring-0 dark:bg-transparent dark:text-stone-300 dark:hover:bg-white/10 dark:hover:text-stone-100 [&_.canvas-select-chevron]:size-3.5 [&_.canvas-select-chevron]:text-stone-400 dark:[&_.canvas-select-chevron]:text-stone-500 [&_.canvas-select-chevron]:transition-transform data-[state=open]:[&_.canvas-select-chevron]:rotate-180"
+                        : "min-w-[9rem] justify-start rounded-lg border border-input bg-transparent px-3 text-sm font-normal shadow-xs hover:bg-stone-50 dark:hover:bg-stone-800",
+                    fullWidth && "w-full min-w-0 justify-start",
                     className,
                 )}
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
                 title={current ? modelOptionLabel(config, current) : pickerPlaceholder}
             >
-                <ModelIcon model={current} />
+                <ModelIcon model={current} className="size-3.5" />
                 {current ? (
                     compact ? (
-                        <span className="canvas-model-picker-text flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-left">
-                            <span className="truncate">{modelName}</span>
-                            {channelName ? (
-                                <>
-                                    <span className="shrink-0 text-stone-400 dark:text-stone-500" aria-hidden>
-                                        ·
-                                    </span>
-                                    <span className="max-w-[5.5rem] truncate text-xs text-stone-500 dark:text-stone-400 sm:max-w-[7rem]">{channelName}</span>
-                                </>
-                            ) : null}
+                        <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left font-medium text-stone-700 dark:text-stone-300">
+                            {modelName}
                         </span>
                     ) : (
                         <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{modelOptionLabel(config, current)}</span>
@@ -85,7 +76,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
             </SelectTrigger>
             <SelectContent
                 data-canvas-no-zoom
-                className="z-[1200] w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border/70 bg-popover p-1 shadow-xl"
+                className="z-[1200] w-72 max-w-[calc(100vw-24px)] rounded-xl border border-stone-200 bg-popover p-1 shadow-lg dark:border-stone-800"
                 position="popper"
                 align="start"
                 side="bottom"
@@ -93,12 +84,34 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 onPointerDown={(event) => event.stopPropagation()}
                 onMouseDown={(event) => event.stopPropagation()}
             >
+                <div className="px-2.5 pt-1.5 pb-1 text-[11px] font-medium text-stone-400 select-none dark:text-stone-500">
+                    {t("settingsPanels.model.select")}
+                </div>
                 {options.length ? (
-                    options.map((model) => (
-                        <SelectItem key={model} value={model} textValue={modelOptionLabel(config, model)}>
-                            <ModelLabel config={config} model={model} />
-                        </SelectItem>
-                    ))
+                    options.map((model) => {
+                        const optModelName = modelOptionName(model);
+                        const optChannelName = modelOptionChannelName(config, model);
+                        return (
+                            <SelectItem
+                                key={model}
+                                value={model}
+                                textValue={modelOptionLabel(config, model)}
+                                className="my-0.5 cursor-pointer rounded-lg px-2.5 py-1.5 text-xs transition-colors focus:bg-stone-100 dark:focus:bg-stone-800"
+                            >
+                                <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                        <ModelIcon model={model} />
+                                        <span className="truncate font-medium text-stone-800 dark:text-stone-200">{optModelName}</span>
+                                    </div>
+                                    {optChannelName ? (
+                                        <span className="shrink-0 rounded bg-stone-100 px-1.5 py-0.5 text-[10px] text-stone-500 dark:bg-stone-800 dark:text-stone-400">
+                                            {optChannelName}
+                                        </span>
+                                    ) : null}
+                                </div>
+                            </SelectItem>
+                        );
+                    })
                 ) : (
                     <SelectItem value="__empty__" disabled>
                         {emptyModelLabel(config, capability)}
@@ -130,9 +143,9 @@ function modelOptionChannelName(config: AiConfig, value: string) {
     return config.channels.find((item) => item.id === decoded.channelId)?.name ?? null;
 }
 
-function ModelIcon({ model }: { model: string }) {
+function ModelIcon({ model, className }: { model: string; className?: string }) {
     const icon = resolveModelIcon(modelOptionName(model));
-    return icon ? <img src={icon} alt="" className="size-4 shrink-0 dark:invert" /> : <Cpu className="size-4 shrink-0 opacity-70" />;
+    return icon ? <img src={icon} alt="" className={cn("size-4 shrink-0 dark:invert", className)} /> : <Cpu className={cn("size-4 shrink-0 opacity-70", className)} />;
 }
 
 function resolveModelIcon(model: string) {

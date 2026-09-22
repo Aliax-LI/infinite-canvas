@@ -174,6 +174,8 @@ export default {
         configFirst: "Complete the configuration first",
         generationFailed: "Generation failed",
         retrySuccess: "Retry succeeded",
+        loadToComposer: "Load to Composer",
+        loadedToComposer: "Loaded to image composer",
     },
     imageWorkbench: {
         title: "Image Studio",

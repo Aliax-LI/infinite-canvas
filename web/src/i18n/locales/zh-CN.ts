@@ -174,6 +174,8 @@ export default {
         configFirst: "请先完成配置",
         generationFailed: "生成失败",
         retrySuccess: "重试成功",
+        loadToComposer: "载入工作台",
+        loadedToComposer: "已载入到生图工作台",
     },
     imageWorkbench: {
         title: "生图工作台",
